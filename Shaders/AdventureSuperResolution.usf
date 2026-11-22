@@ -1,0 +1,61 @@
+#include "/Engine/Public/Platform.ush"
+
+Texture2D<float4> InputTexture;
+int2 InputOrigin;
+uint ConvertSRGB;
+
+float EncodeSRGB(float Value)
+{
+	return Value <= 0.0031308 ? Value * 12.92 : 1.055 * pow(Value, 1.0 / 2.4) - 0.055;
+}
+
+float DecodeSRGB(float Value)
+{
+	return Value <= 0.04045 ? Value / 12.92 : pow((Value + 0.055) / 1.055, 2.4);
+}
+
+RWBuffer<float> PackedTensor;
+
+[numthreads(8, 8, 1)]
+void PackInput(uint3 Thread : SV_DispatchThreadID)
+{
+	const uint2 Pixel = Thread.xy;
+	if (any(Pixel >= uint2(1920, 1080)))
+	{
+		return;
+	}
+
+	float3 RGB = saturate(InputTexture.Load(int3(InputOrigin + int2(Pixel), 0)).rgb);
+	if (ConvertSRGB != 0)
+	{
+		RGB = float3(EncodeSRGB(RGB.r), EncodeSRGB(RGB.g), EncodeSRGB(RGB.b));
+	}
+	const uint PlaneSize = 1920 * 1080;
+	const uint Offset = Pixel.y * 1920 + Pixel.x;
+	PackedTensor[Offset] = RGB.r;
+	PackedTensor[PlaneSize + Offset] = RGB.g;
+	PackedTensor[2 * PlaneSize + Offset] = RGB.b;
+}
+
+Buffer<float> OutputTensor;
+RWTexture2D<float4> OutputTexture;
+
+[numthreads(8, 8, 1)]
+void UnpackOutput(uint3 Thread : SV_DispatchThreadID)
+{
+	const uint2 Pixel = Thread.xy;
+	if (any(Pixel >= uint2(3840, 2160)))
+	{
+		return;
+	}
+
+	const uint PlaneSize = 3840 * 2160;
+	const uint Offset = Pixel.y * 3840 + Pixel.x;
+	float3 RGB = saturate(float3(OutputTensor[Offset], OutputTensor[PlaneSize + Offset], OutputTensor[2 * PlaneSize + Offset]));
+	if (ConvertSRGB != 0)
+	{
+		RGB = float3(DecodeSRGB(RGB.r), DecodeSRGB(RGB.g), DecodeSRGB(RGB.b));
+	}
+	const float Alpha = InputTexture.Load(int3(InputOrigin + int2(Pixel / 2), 0)).a;
+	OutputTexture[Pixel] = float4(RGB, Alpha);
+}
